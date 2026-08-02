@@ -4,10 +4,10 @@ import android.content.Context
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.PlaybackException
-import com.google.android.exoplayer2.Player
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import io.flutter.plugin.common.MethodChannel
 
 class AudioPlayer(
@@ -22,6 +22,19 @@ class AudioPlayer(
     private var player: ExoPlayer? = null
     private var playerListener: Player.Listener? = null
     private var isPlayerPrepared: Boolean = false
+
+    /**
+     * Guards the STATE_ENDED handling in [onPlaybackStateChanged] below from
+     * re-entrancy. That handler calls player?.seekTo(0), a player-mutating
+     * call made from inside the player's own listener callback - if that
+     * causes ExoPlayer to re-report STATE_ENDED (observed on-device: tens
+     * of thousands of repeated onDidFinishPlayingAudio channel calls per
+     * playback, each triggering a Flutter setState() and together pegging
+     * the main thread), this flag stops it from reacting more than once
+     * per play-through instead of looping forever. Reset whenever a new
+     * play-through can legitimately reach the end again.
+     */
+    private var hasHandledPlaybackEnd = false
     private var finishMode = FinishMode.Stop
     private var key = playerKey
     private var updateFrequency: Long = 200
@@ -38,9 +51,18 @@ class AudioPlayer(
             }
             val uri = Uri.parse(path)
             val mediaItem = MediaItem.fromUri(uri)
+            hasHandledPlaybackEnd = false
             stop()
             player?.clearMediaItems()
             player = ExoPlayer.Builder(appContext).build()
+            // ExoPlayer.Builder defaults playWhenReady to true, so without
+            // this the file starts playing the instant it's buffered -
+            // before the app even finishes calling back into Flutter. For a
+            // short clip that races straight through to STATE_ENDED before
+            // the caller ever gets a chance to interact with the player.
+            // Playback should only start when the caller explicitly taps
+            // play (start()/resume() set this back to true).
+            player?.playWhenReady = false
             player?.setMediaItem(mediaItem)
             player?.prepare()
             playerListener = object : Player.Listener {
@@ -50,7 +72,7 @@ class AudioPlayer(
                     result.error(Constants.LOG_TAG, error.message, "Unable to load media source.")
                 }
 
-                override fun onPlayerStateChanged(isReady: Boolean, state: Int) {
+                override fun onPlaybackStateChanged(state: Int) {
                     if (!isPlayerPrepared) {
                         if (state == Player.STATE_READY) {
                             player?.volume = volume ?: 1F
@@ -58,7 +80,8 @@ class AudioPlayer(
                             result.success(true)
                         }
                     }
-                    if (state == Player.STATE_ENDED) {
+                    if (state == Player.STATE_ENDED && !hasHandledPlaybackEnd) {
+                        hasHandledPlaybackEnd = true
                         val args: MutableMap<String, Any?> = HashMap()
                         when (finishMode) {
                             FinishMode.Stop -> {
@@ -108,6 +131,7 @@ class AudioPlayer(
 
     fun start(result: MethodChannel.Result) {
         try {
+            hasHandledPlaybackEnd = false
             player?.playWhenReady = true
             player?.play()
             result.success(true)

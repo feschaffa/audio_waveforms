@@ -65,6 +65,7 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             Constants.pauseRecording -> record.pause(result)
 
             Constants.resumeRecording -> record.resume(result)
+            Constants.getDecibel -> record.getDecibel(result)
             Constants.checkPermission -> audioRecorder.checkPermission(
                 result, activity, result::success
             )
@@ -239,7 +240,7 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 return
             }
         }
-        record.initRecorder(recorderSettings, channel, result)
+        record.initRecorder(recorderSettings, result)
     }
 
     private fun initPlayer(playerKey: String) {
@@ -305,6 +306,7 @@ class AudioWaveformsPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     override fun onDetachedFromActivity() {
         recorder?.release()
         recorder = null
+        record.release()
         audioPlayers.clear()
         extractors.clear()
         activity = null

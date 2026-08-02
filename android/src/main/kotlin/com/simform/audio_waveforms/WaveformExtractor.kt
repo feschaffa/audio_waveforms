@@ -68,6 +68,8 @@ class WaveformExtractor(
     private var perSamplePoints = 0L
     /** Flag to prevent submitting multiple results */
     private var isReplySubmitted = false
+    /** Flag to prevent stop() from running more than once */
+    private var isStopped = false
 
     /**
      * Retrieves the audio format from the given media file
@@ -400,8 +402,16 @@ class WaveformExtractor(
      * 1. Stops and releases the MediaCodec decoder
      * 2. Releases the MediaExtractor
      * 3. Signals completion via the countdown latch
+     *
+     * Idempotent: extraction reaching EOF naturally already calls this from
+     * onOutputBufferAvailable, so a caller-initiated stop (e.g. disposing
+     * the player while/after extraction finished) must not run this twice -
+     * MediaCodec throws IllegalStateException ("codec is released already")
+     * on a second stop()/release().
      */
     fun stop() {
+        if (isStopped) return
+        isStopped = true
         decoder?.stop()
         decoder?.release()
         extractor?.release()

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show Platform;
+import 'dart:math' show max;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -26,6 +27,22 @@ class RecorderController extends ChangeNotifier {
   }
 
   final _platformStream = PlatformStreams.instance;
+
+  /// Android only. The MediaRecorder-based native recorder has no push
+  /// stream for live amplitude (that only exists for the AudioRecord-based
+  /// recorder this fork intentionally doesn't use - see AudioRecorder.kt).
+  /// Live waveform data is instead polled from native at this interval,
+  /// same approach as pre-2.0.0 releases of this plugin.
+  Timer? _decibelTimer;
+
+  /// At which rate the Android waveform is polled during recording.
+  Duration updateFrequency = const Duration(milliseconds: 100);
+
+  /// Current maximum peak amplitude seen, used to normalise [_waveData].
+  double _maxPeak = 32767.0;
+
+  /// Current minimum value seen, used to normalise [_waveData].
+  double _currentMin = 0;
 
   final List<double> _waveData = [];
 
@@ -176,14 +193,14 @@ class RecorderController extends ChangeNotifier {
           _isRecording = await AudioWaveformsInterface.instance.resume();
           if (_isRecording) {
             _setRecorderState(RecorderState.recording);
+            if (Platform.isAndroid) _startDecibelPolling();
           } else {
             throw "Failed to resume recording";
           }
           notifyListeners();
           return;
         }
-        // iOS and macOS don't require initialization, set state directly
-        if (isIosOrMacOS) {
+        if (Platform.isIOS) {
           _setRecorderState(RecorderState.initialized);
         }
         if (_recorderState.isInitialized) {
@@ -194,6 +211,7 @@ class RecorderController extends ChangeNotifier {
           );
           if (_isRecording) {
             _setRecorderState(RecorderState.recording);
+            if (Platform.isAndroid) _startDecibelPolling();
           } else {
             throw "Failed to start recording";
           }
@@ -247,6 +265,7 @@ class RecorderController extends ChangeNotifier {
       if (_isRecording) {
         throw "Failed to pause recording";
       }
+      _decibelTimer?.cancel();
       _setRecorderState(RecorderState.paused);
     }
     notifyListeners();
@@ -267,6 +286,7 @@ class RecorderController extends ChangeNotifier {
     if (_recorderState.isRecording || _recorderState.isPaused) {
       final audioInfo = await AudioWaveformsInterface.instance.stop();
       _isRecording = false;
+      _decibelTimer?.cancel();
       if (audioInfo[Constants.resultDuration] != null) {
         final duration = audioInfo[Constants.resultDuration];
 
@@ -301,6 +321,35 @@ class RecorderController extends ChangeNotifier {
 
   void _updateOnNewAmplitude(double amplitude) {
     _waveData.add(amplitude);
+    notifyListeners();
+  }
+
+  /// Android only. Polls native for the current amplitude at
+  /// [updateFrequency] and feeds it into [_waveData]. See [_decibelTimer].
+  void _startDecibelPolling() {
+    _decibelTimer?.cancel();
+    _decibelTimer = Timer.periodic(updateFrequency, (timer) async {
+      final peak = await AudioWaveformsInterface.instance.getDecibel();
+      if (peak == null) return;
+      _normalise(peak);
+    });
+  }
+
+  /// Normalises the peak amplitude reported by MediaRecorder.getMaxAmplitude
+  /// (range 0..32767) to 0.0-1.0, scaling against the highest peak seen so
+  /// waveform bars stay proportionate across a whole recording.
+  void _normalise(double peak) {
+    final absPeak = peak.abs();
+    _maxPeak = max(absPeak, _maxPeak);
+
+    _currentMin = _waveData.fold(
+      0,
+      (previousValue, element) =>
+          element < previousValue ? element : previousValue,
+    );
+
+    final scaledWave = (absPeak - _currentMin) / (_maxPeak - _currentMin);
+    _waveData.add(scaledWave);
     notifyListeners();
   }
 
@@ -344,6 +393,7 @@ class RecorderController extends ChangeNotifier {
     _recordedFileDurationController.close();
     _amplitudeStreamSubscription?.cancel();
     _currentDurationStreamSubscription?.cancel();
+    _decibelTimer?.cancel();
     _isDisposed = true;
     super.dispose();
   }
