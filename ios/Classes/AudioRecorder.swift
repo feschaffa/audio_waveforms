@@ -8,10 +8,8 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     var audioUrl: URL?
     var recordedDuration: CMTime = CMTime.zero
     var flutterChannel: FlutterMethodChannel
-    var bytesStreamEngine: RecorderBytesStreamEngine
     init(channel: FlutterMethodChannel){
         flutterChannel = channel
-        bytesStreamEngine = RecorderBytesStreamEngine(channel: channel)
     }
 
     func startRecording(_ result: @escaping FlutterResult,_ recordingSettings: RecordingSettings){
@@ -24,9 +22,10 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
                 AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ]
         
-        if (recordingSettings.bitRate != nil) {
-            settings[AVEncoderBitRateKey] = recordingSettings.bitRate
-        }
+        // Do not set AVEncoderBitRateKey. AAC-LC at 16 kHz rejects 128 kbps
+        // and AVAudioRecorder then writes an m4a that AVAudioPlayer cannot
+        // open (OSStatus 1685348671 / kAudioFileInvalidFileError). Letting
+        // the encoder pick the bitrate matches pre-2.0.0 app behaviour.
 
         if ((recordingSettings.encoder ?? 0) == Constants.kAudioFormatLinearPCM) {
             settings[AVLinearPCMBitDepthKey] = recordingSettings.linearPCMBitDepth
@@ -63,11 +62,11 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
             audioRecorder?.delegate = self
             audioRecorder?.isMeteringEnabled = true
             audioRecorder?.record()
-            bytesStreamEngine
-                .attach(
-                    result: result,
-                    sampleRate:  recordingSettings.sampleRate ?? Constants.defaultSampleRate
-                )
+            // Do not start RecorderBytesStreamEngine here. Tapping
+            // AVAudioEngine.inputNode while AVAudioRecorder owns the mic
+            // produces a malformed m4a (same OSStatus 1685348671). Live
+            // waveform amplitude is polled via getDecibel() instead, as
+            // on Android in this fork and as in pre-2.0.0 iOS.
             result(true)
         } catch {
             result(FlutterError(code: Constants.audioWaveforms, message: "Failed to start recording", details: error.localizedDescription))
@@ -76,7 +75,6 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     
     public func stopRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.stop()
-        bytesStreamEngine.detach()
         if(audioUrl != nil) {
             let asset = AVURLAsset(url:  audioUrl!)
             
@@ -109,13 +107,11 @@ public class AudioRecorder: NSObject, AVAudioRecorderDelegate{
     
     public func pauseRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.pause()
-        bytesStreamEngine.togglePause()
         result(false)
     }
     
     public func resumeRecording(_ result: @escaping FlutterResult) {
         audioRecorder?.record()
-        bytesStreamEngine.togglePause();
         result(true)
     }
     

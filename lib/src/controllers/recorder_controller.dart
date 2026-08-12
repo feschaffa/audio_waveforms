@@ -28,14 +28,15 @@ class RecorderController extends ChangeNotifier {
 
   final _platformStream = PlatformStreams.instance;
 
-  /// Android only. The MediaRecorder-based native recorder has no push
-  /// stream for live amplitude (that only exists for the AudioRecord-based
-  /// recorder this fork intentionally doesn't use - see AudioRecorder.kt).
-  /// Live waveform data is instead polled from native at this interval,
+  /// The MediaRecorder-based Android recorder and the AVAudioRecorder-based
+  /// iOS recorder have no push stream for live amplitude (the 2.0.0 PCM
+  /// chunk stream is intentionally unused: on Android it required AudioRecord
+  /// + MediaCodec, on iOS it required an AVAudioEngine tap that corrupted
+  /// the m4a). Live waveform data is polled from native at this interval,
   /// same approach as pre-2.0.0 releases of this plugin.
   Timer? _decibelTimer;
 
-  /// At which rate the Android waveform is polled during recording.
+  /// At which rate the waveform is polled during recording.
   Duration updateFrequency = const Duration(milliseconds: 100);
 
   /// Current maximum peak amplitude seen, used to normalise [_waveData].
@@ -193,7 +194,9 @@ class RecorderController extends ChangeNotifier {
           _isRecording = await AudioWaveformsInterface.instance.resume();
           if (_isRecording) {
             _setRecorderState(RecorderState.recording);
-            if (Platform.isAndroid) _startDecibelPolling();
+            if (Platform.isAndroid || Platform.isIOS) {
+              _startDecibelPolling();
+            }
           } else {
             throw "Failed to resume recording";
           }
@@ -211,7 +214,9 @@ class RecorderController extends ChangeNotifier {
           );
           if (_isRecording) {
             _setRecorderState(RecorderState.recording);
-            if (Platform.isAndroid) _startDecibelPolling();
+            if (Platform.isAndroid || Platform.isIOS) {
+              _startDecibelPolling();
+            }
           } else {
             throw "Failed to start recording";
           }
@@ -324,14 +329,22 @@ class RecorderController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Android only. Polls native for the current amplitude at
-  /// [updateFrequency] and feeds it into [_waveData]. See [_decibelTimer].
+  /// Polls native for the current amplitude at [updateFrequency] and feeds
+  /// it into [_waveData]. See [_decibelTimer].
   void _startDecibelPolling() {
     _decibelTimer?.cancel();
     _decibelTimer = Timer.periodic(updateFrequency, (timer) async {
+      if (Platform.isIOS) {
+        _elapsedDuration += updateFrequency;
+      }
       final peak = await AudioWaveformsInterface.instance.getDecibel();
       if (peak == null) return;
-      _normalise(peak);
+      if (Platform.isAndroid) {
+        _normalise(peak);
+      } else {
+        // iOS getDecibel already returns linear 0..1 peak power.
+        _updateOnNewAmplitude(peak);
+      }
     });
   }
 

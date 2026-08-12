@@ -23,15 +23,14 @@ class AudioPlayer: NSObject, AVAudioPlayerDelegate {
     func preparePlayer(path: String?, volume: Double?, updateFrequency: Int?,result: @escaping FlutterResult, overrideAudioSession : Bool) {
         if(!(path ?? "").isEmpty) {
             self.updateFrequency = updateFrequency ?? 200
-            let audioUrl = URL.init(string: path!)
-            if(audioUrl == nil){
-                result(FlutterError(code: Constants.audioWaveforms, message: "Failed to initialise Url from provided audio file", details: "If path contains `file://` try removing it"))
-                return
-            }
+            // fileURLWithPath: Dart already strips any file:// prefix via
+            // Uri.path. URL(string:) without a scheme produces a non-file
+            // URL that AVAudioPlayer can reject with OSStatus 1685348671.
+            let audioUrl = URL(fileURLWithPath: path!)
             do {
                 stopPlayer()
                 player = nil
-                player = try AVAudioPlayer(contentsOf: audioUrl!)
+                player = try AVAudioPlayer(contentsOf: audioUrl)
                 do {
                     if overrideAudioSession {
                         try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
